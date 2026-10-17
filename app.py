@@ -3,7 +3,7 @@ PDF Reader RAG  (100% free stack)
 - PDF parsing : pypdf
 - Embeddings  : fastembed (BAAI/bge-small-en-v1.5, runs locally on CPU)
 - Vector search: NumPy cosine similarity (no paid vector DB)
-- LLM         : Groq free tier (Llama 3.1) -> https://console.groq.com
+- LLM         : Google Gemini (AI Studio free key) OR Groq free tier
 - Frontend    : Streamlit
 Accuracy: per-answer faithfulness + retrieval scores, and a one-click
 automatic evaluation (Hit@k and MRR) on the uploaded PDF.
@@ -16,6 +16,8 @@ import re
 import numpy as np
 import streamlit as st
 from fastembed import TextEmbedding
+from google import genai
+from google.genai import types
 from groq import Groq
 from pypdf import PdfReader
 
@@ -64,12 +66,22 @@ def retrieve(query, chunks, index, k):
     return [(int(i), float(scores[i])) for i in top]
 
 
-def get_client(api_key):
-    return Groq(api_key=api_key)
+def get_client(provider, api_key):
+    if provider.startswith("Gemini"):
+        return {"provider": "gemini", "obj": genai.Client(api_key=api_key)}
+    return {"provider": "groq", "obj": Groq(api_key=api_key)}
 
 
 def llm(client, model, system, user, temperature=0.0):
-    r = client.chat.completions.create(
+    if client["provider"] == "gemini":
+        r = client["obj"].models.generate_content(
+            model=model,
+            contents=user,
+            config=types.GenerateContentConfig(
+                system_instruction=system, temperature=temperature),
+        )
+        return (r.text or "").strip()
+    r = client["obj"].chat.completions.create(
         model=model,
         temperature=temperature,
         messages=[{"role": "system", "content": system},
@@ -112,19 +124,24 @@ def make_test_question(client, model, chunk_text):
 
 # ---------------------------------------------------------------- sidebar
 st.title("📄 PDF Reader RAG")
-st.caption("Ask questions about a single PDF — free stack: pypdf + fastembed + Groq + Streamlit")
+st.caption("Ask questions about a single PDF — free stack: pypdf + fastembed + Gemini/Groq + Streamlit")
 
 with st.sidebar:
     st.header("Settings")
+    provider = st.selectbox("LLM provider (both free)",
+                            ["Gemini (Google AI Studio)", "Groq"])
+    secret_name = "GEMINI_API_KEY" if provider.startswith("Gemini") else "GROQ_API_KEY"
+    default_model = ("gemini-2.5-flash" if provider.startswith("Gemini")
+                     else "llama-3.1-8b-instant")
     api_key = None
     try:
-        api_key = st.secrets["GROQ_API_KEY"]
+        api_key = st.secrets[secret_name]
     except Exception:
-        api_key = os.getenv("GROQ_API_KEY")
+        api_key = os.getenv(secret_name)
     if not api_key:
-        api_key = st.text_input("Groq API key (free)", type="password")
-    model = st.text_input("Groq model", value="llama-3.1-8b-instant",
-                          help="If Groq retires this model, pick another from console.groq.com/docs/models")
+        api_key = st.text_input(f"{provider} API key (free)", type="password")
+    model = st.text_input("Model name", value=default_model, key=f"model_{provider}",
+                          help="If the model is retired, pick a current free one from the provider's docs")
     top_k = st.slider("Chunks retrieved (top-k)", 1, 8, 4)
     chunk_size = st.slider("Chunk size (characters)", 400, 1500, 800, 100)
     st.markdown("---")
@@ -150,9 +167,9 @@ chunks, index = st.session_state["chunks"], st.session_state["index"]
 st.success(f"Indexed **{uploaded.name}**: {len(chunks)} chunks.")
 
 if not api_key:
-    st.warning("Add your free Groq API key in the sidebar (or Streamlit secrets).")
+    st.warning(f"Add your free {provider} API key in the sidebar (or Streamlit secrets as {secret_name}).")
     st.stop()
-client = get_client(api_key)
+client = get_client(provider, api_key)
 
 tab_ask, tab_eval = st.tabs(["💬 Ask the PDF", "📊 Evaluate accuracy"])
 

@@ -3,3 +3,4 @@ pypdf>=4.0
 fastembed>=0.3
 groq>=0.9
 numpy
+google-genai>=1.0
